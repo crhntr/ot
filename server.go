@@ -4,6 +4,7 @@ package ot
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -100,4 +101,30 @@ func (client *Client) Write() {
 		}
 	}
 	client.Send = nil
+}
+
+type ApplierList []Applier
+
+func (list *ApplierList) UnmarshalJSON(data []byte) error {
+	var marshaled []interface{}
+	if err := json.Unmarshal(data, &marshaled); err != nil {
+		return err
+	}
+	li := ApplierList(make([]Applier, len(marshaled)))
+	list = &li
+	for i, op := range marshaled {
+		switch o := op.(type) {
+		case string:
+			(*list)[i] = Insert(o)
+		case float64:
+			if o < 0 {
+				(*list)[i] = Delete(int(o))
+			} else {
+				(*list)[i] = Retain(int(o))
+			}
+		default:
+			return fmt.Errorf("unknown op type %v %t", o, o)
+		}
+	}
+	return nil
 }

@@ -39,7 +39,6 @@ func NewBuildHandler(webappDir string, rebuildWebappOnRequest bool) (http.Handle
 					return
 				}
 			}
-			res.WriteHeader(http.StatusOK)
 			http.ServeFile(res, req, tmpWASM)
 		}
 	}, nil

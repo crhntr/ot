@@ -3,153 +3,248 @@
 package ot
 
 import (
+	"encoding/json"
 	"fmt"
+	"log"
 	"syscall/js"
-	"time"
 )
+
+// TODO: handle ctrl+z by looking up state in operation history
 
 func NewTextarea(document, parentElement js.Value, authorityURL, name string) {
 	textarea := document.Call("createElement", "textarea")
-
-	var (
-		selected = false
-	)
-	textarea.Call("setAttribute", "autofocus", "")
-	textarea.Call("addEventListener", "blur", js.FuncOf(func(_ js.Value, _ []js.Value) interface{} {
-		selected = false
-		fmt.Println("selected blur")
-		return nil // ignored
-	}))
-	textarea.Call("addEventListener", "focus", js.FuncOf(func(_ js.Value, _ []js.Value) interface{} {
-		selected = true
-		fmt.Println("selected focus")
-		return nil // ignored
-	}))
-	textarea.Call("addEventListener", "select", onSelect(textarea))
-	textarea.Call("addEventListener", "input", onInput(textarea))
-	textarea.Call("addEventListener", "paste", onPaste(textarea))
-	textarea.Call("addEventListener", "keydown", onKeydown(textarea))
-	textarea.Call("addEventListener", "cut", onCut(textarea))
 	parentElement.Call("appendChild", textarea)
+	textarea.Call("setAttribute", "autofocus", "")
+	ws := js.Global().Get("WebSocket").New(authorityURL)
+	messageData := make(chan string)
+	ws.Call("addEventListener", "message", js.FuncOf(func(target js.Value, args []js.Value) interface{} {
+		var (
+			event = args[0]
+		)
+		messageData <- event.Get("data").String()
+		return nil
+	}))
+	go func() {
+		for buf := range messageData {
+			var message Message
+			if err := json.Unmarshal([]byte(buf), &message); err != nil {
+				log.Println(err)
+				continue
+			}
+			fmt.Println(message)
+		}
+	}()
+	insertOps := handleInput(textarea)
+	keydownOps := handleKeydown(textarea)
+	go func() {
+		for {
+			var opperation []Applier
+			select {
+			case op := <-insertOps:
+				opperation = op
+			case op := <-keydownOps:
+				opperation = op
+			}
+			buf, err := json.Marshal(Message{Operation: ApplierList(opperation)})
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
+			ws.Call("send", string(buf))
+			fmt.Printf("event: %+v\n", opperation)
+		}
+	}()
 }
 
 func getCaretPosition(textarea js.Value) (int, int) {
-	// initial := 0
-	// defer func() {
-	// 	if r := recover(); r != nil {
-	// 		fmt.Printf("getCaretPosition failure: %v", r)
-	// 	}
-	// }()
-	// value := textarea.Get("value")
-	// selection := js.Global().Call("getSelection")
-	// if selection.Truthy() {
-	// 	start := textarea.Get("selectionStart")
-	// 	if start.Truthy() {
-	// 		return 0, 0
-	// 	}
-	// 	return int(start.Float()), int(textarea.Get("selectionEnd").Float())
-	// }
-	// textarea.Call("focus")
-	// selectionRange := selection.Call("createRange")
-	// rangeLen := selectionRange.Get("text").Length()
-	// selectionRange.Call("moveStart", "character", -value.Length())
-	// start := selectionRange.Get("text").Length() - rangeLen
 	start := textarea.Get("selectionStart").Int()
 	end := textarea.Get("selectionEnd").Int()
 	return start, end
 }
 
-func onInput(textarea js.Value) js.Func {
-	return js.FuncOf(func(target js.Value, args []js.Value) interface{} {
-		start, end := getCaretPosition(textarea)
-		data := target.Get("value").String()
-		fmt.Printf("Insert {start: %d, end: %d, data: %s}\n", start, end, data)
-		return nil // ignored
-	})
+func handleInput(textarea js.Value) chan []Applier {
+	selections := make(chan Selection)
+	input := make(chan string)
+	cut := make(chan struct{})
+	ops := make(chan []Applier)
+	textarea.Call("addEventListener", "select", onSelect(textarea, selections))
+	textarea.Call("addEventListener", "input", js.FuncOf(func(target js.Value, args []js.Value) interface{} {
+		if val := args[0].Get("data"); val.Truthy() {
+			input <- val.String()
+		}
+		return nil
+	}))
+	textarea.Call("addEventListener", "cut", js.FuncOf(func(target js.Value, args []js.Value) interface{} {
+		go func() { cut <- struct{}{} }()
+		return nil
+	}))
+	go func() {
+		var selection Selection
+		for {
+			select {
+			case sel, ok := <-selections:
+				if !ok {
+					continue
+				}
+				selection = sel
+			case <-cut:
+				val := textarea.Get("value")
+				if !val.Truthy() {
+					continue
+				}
+				value := val.String()
+				var op []Applier
+				if selection.Start == 0 && selection.End == 0 {
+					op = append(op, Delete(-len(value)))
+				}
+				if selection.Start > 0 {
+					op = append(op, Retain(selection.Start))
+				}
+				if rm := -len(value[selection.Start:selection.End]); rm < 0 {
+					op = append(op, Delete(rm))
+				}
+				if retainEnd := len(value) - selection.End; retainEnd > 0 && (selection.Start != 0 || selection.End != 0) {
+					op = append(op, Retain(retainEnd))
+				}
+				if len(op) > 0 {
+					go func() { ops <- op }()
+				}
+				selection.End = selection.Start
+			case txt, ok := <-input:
+				if !ok {
+					continue
+				}
+				var op []Applier
+				if selection.Start != selection.End {
+					op = append(op, Retain(selection.Start))
+					op = append(op, Delete(selection.Start-selection.End))
+					selection.End = selection.Start
+				} else {
+					start, _ := getCaretPosition(textarea)
+					if startRetain := start - len(txt); startRetain > 0 {
+						op = append(op, Retain(startRetain))
+					}
+				}
+				if len(txt) > 0 {
+					op = append(op, Insert(txt))
+				}
+				var value string
+				val := textarea.Get("value")
+				if !val.Truthy() {
+					continue
+				}
+				value = val.String()
+				_, end := getCaretPosition(textarea)
+				if endRetain := len(value) - end; endRetain != 0 {
+					op = append(op, Retain(endRetain))
+				}
+				if len(op) > 0 {
+					go func() { ops <- op }()
+				}
+			}
+		}
+	}()
+	return ops /*, func() { // close func
+		textarea.Call("removeEventListener", "select")
+		textarea.Call("removeEventListener", "input")
+		close(selections)
+		close(input)
+	}*/
 }
 
-func onSelect(textarea js.Value) js.Func {
+type Selection struct {
+	Start, End int
+}
+
+func onSelect(textarea js.Value, selections chan<- Selection) js.Func {
 	return js.FuncOf(func(target js.Value, args []js.Value) interface{} {
 		start, end := getCaretPosition(textarea)
 		val := textarea.Get("value").String()
-		if start >= len(val) {
-			start = len(val) - 1
+		if start < len(val) && start >= 0 && end < len(val) && end >= 0 {
+			selections <- Selection{start, end}
 		}
-		if start < 0 {
-			start = 0
-		}
-		if end >= len(val) {
-			end = len(val) - 1
-		}
-		if end < 0 {
-			end = 0
-		}
-		fmt.Printf("selected: %q\n", val[start:end])
-		return nil // ignored
-	})
-}
-
-func onPaste(textarea js.Value) js.Func {
-	return js.FuncOf(func(target js.Value, args []js.Value) interface{} {
-		start, end := getCaretPosition(textarea)
-		val := textarea.Get("value").String()
-		pre := val[:start]
-		suf := val[end:]
-		go func() {
-			// deal with paste that takes a lot of time
-			time.Sleep(4 * time.Millisecond)
-			pasteVal := textarea.Get("value").String()
-			clip := pasteVal[len(pre) : len(pasteVal)-len(suf)]
-			fmt.Printf("Insert {start: %d, end: %d, data: %s}\n", start, end, clip)
-		}()
 		return nil
 	})
 }
 
-func onKeydown(textarea js.Value) js.Func {
-	return js.FuncOf(func(target js.Value, args []js.Value) interface{} {
+func handleKeydown(textarea js.Value) chan []Applier {
+	ops := make(chan []Applier)
+	textarea.Call("addEventListener", "keydown", js.FuncOf(func(target js.Value, args []js.Value) interface{} {
 		event := args[0]
 		if key := event.Get("key").String(); key == "Delete" || key == "Backspace" {
 			start, end := getCaretPosition(textarea)
-			val := textarea.Get("value").String()
 			if start == end {
-				var data string
-				if start > 1 && start < len(val) {
-					data = val[start-1 : start]
-				}
-				fmt.Printf("Delete {start: %d, end: %d, data: %s}\n", start-1, start, data)
-			} else {
-				fmt.Printf("Delete {start: %d, end: %d, data: %s}\n", start, end, val[start:end])
+				start--
+			}
+			val := textarea.Get("value")
+			if !val.Truthy() {
+				return nil
+			}
+			var op []Applier
+			if start > 0 {
+				op = append(op, Retain(start))
+			}
+			if rm := start - end; rm < 0 {
+				op = append(op, Delete(rm))
+			}
+			if retainEnd := len(val.String()) - end; retainEnd > 0 {
+				op = append(op, Retain(retainEnd))
+			}
+			if len(op) > 0 {
+				go func() { ops <- op }()
 			}
 		}
 		return nil
-	})
+	}))
+	return ops
 }
 
-func onCut(textarea js.Value) js.Func {
-	return js.FuncOf(func(target js.Value, _ []js.Value) interface{} {
-		start, end := getCaretPosition(textarea)
-		go func() {
-			time.Sleep(4 * time.Millisecond)
-			value := target.Get("value").String()
-			if start > 0 && start < len(value) && end > 0 && end < len(value) {
-				value = value[start:end]
-			}
-			fmt.Printf("Delete {start: %d, end: %d, data: %s}\n", start, end, value)
-		}()
-		return nil
-	})
-}
+// textarea.Call("addEventListener", "blur", js.FuncOf(func(_ js.Value, _ []js.Value) interface{} {
+// 	selected = false
+// 	fmt.Println("selected blur")
+// 	return nil
+// }))
+// textarea.Call("addEventListener", "focus", js.FuncOf(func(_ js.Value, _ []js.Value) interface{} {
+// 	selected = true
+// 	fmt.Println("selected focus")
+// 	return nil
+// }))
 
-// setCaretPosition := func(ctrl js.Value, start, end int) {
-// 	if selectionRange := ctrl.Get("setSelectionRange"); selectionRange.Truthy() {
-// 		ctrl.Call("focus")
-// 		ctrl.Call("setSelectionRange", start, end)
-// 	} else if createTextRange := ctrl.Get("createTextRange"); createTextRange.Truthy() {
-// 		selectionRange := ctrl.Call("createTextRange")
-// 		selectionRange.Call("collapse", true)
-// 		selectionRange.Call("moveEnd", "character", end)
-// 		selectionRange.Call("moveStart", "character", start)
-// 		selectionRange.Call("select")
-// 	}
+// func handlePaste(textarea js.Value) (chan []Applier, func()) {
+// 	ops := make(chan []Applier)
+// 	textarea.Call("addEventListener", "paste", js.FuncOf(func(target js.Value, args []js.Value) interface{} {
+// 		start, end := getCaretPosition(textarea)
+// 		val := textarea.Get("value")
+// 		if !val.Truthy() {
+// 			return nil
+// 		}
+// 		initValue := val.String()
+// 		pre := Retain(len(initValue[:start]))
+// 		suf := Retain(len(initValue[end:]))
+// 		go func() {
+// 			time.Sleep(4 * time.Millisecond)
+// 			// deal with paste that takes a lot of time
+// 			var op []Applier
+// 			if pre > 0 {
+// 				op = append(op, pre)
+// 			}
+// 			val := textarea.Get("value")
+// 			if !val.Truthy() {
+// 				return
+// 			}
+// 			value := val.String()
+// 			clip := value[int(pre) : len(value)-int(suf)]
+// 			if len(clip) > 0 {
+// 				op = append(op, Insert(clip))
+// 			}
+// 			if suf > 0 {
+// 				op = append(op, suf)
+// 			}
+// 			if len(op) > 0 {
+// 				ops <- op
+// 			}
+// 		}()
+// 		return nil
+// 	}))
+// 	return ops, nil
 // }

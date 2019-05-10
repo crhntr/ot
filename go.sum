@@ -1,10 +1,10 @@
 github.com/crhntr/httplog v0.0.0-20190401183412-2ff363b51949 h1:CjIzy+eNFevWPVi8DjRNA23as59tGWFWUVtBMMQEPEI=
 github.com/crhntr/httplog v0.0.0-20190401183412-2ff363b51949/go.mod h1:nVjp8iphIwbLetOZPkHGgSUqNsbz1ZvU68JZXBzJfjU=
-github.com/crhntr/httprouter v1.2.0 h1:AA0Pg1gt6pJ3pzCzabAl4SeuCL2T6TQJAJG9bVG8IeI=
-github.com/crhntr/httprouter v1.2.0/go.mod h1:JPPGkZjZvcN5Y9uJCsjJlDMYyFIOC8Du4T685f6mx9c=
 github.com/gobwas/httphead v0.0.0-20180130184737-2c6c146eadee h1:s+21KNqlpePfkah2I+gwHF8xmJWRjooY+5248k6m4A0=
 github.com/gobwas/httphead v0.0.0-20180130184737-2c6c146eadee/go.mod h1:L0fX3K22YWvt/FAX9NnzrNzcI4wNYi9Yku4O0LKYflo=
 github.com/gobwas/pool v0.2.0 h1:QEmUOlnSjWtnpRGHF3SauEiOsy82Cup83Vf2LcMlnc8=
 github.com/gobwas/pool v0.2.0/go.mod h1:q8bcK0KcYlCgd9e7WYLm9LpyS+YeLd8JVDW6WezmKEw=
 github.com/gobwas/ws v1.0.0 h1:1WdyfgUcImUfVBvYbsW2krIsnko+1QU2t45soaF8v1M=
 github.com/gobwas/ws v1.0.0/go.mod h1:szmBTxLgaFppYjEmNtny/v3w89xOydFnnZMcgRRu/EM=
+golang.org/x/sys v0.0.0-20190509141414-a5b02f93d862 h1:rM0ROo5vb9AdYJi1110yjWGMej9ITfKddS89P3Fkhug=
+golang.org/x/sys v0.0.0-20190509141414-a5b02f93d862/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=
